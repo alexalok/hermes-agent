@@ -10,6 +10,10 @@ name: CI
 # ``push:`` / ``pull_request:`` triggers of their own — everything flows
 # through this file.
 #
+# Runner allocation follows github.repository throughout the called workflows:
+# upstream keeps its managed runners; forks use standard GitHub-hosted runners.
+# See .github/README.md for the runner and checkout compatibility policy.
+#
 # SECURITY: this workflow runs PR-controlled actions, workflows, and code.
 # Do not add ``secrets: inherit`` or GitHub App credentials here. Trusted
 # main-only automation uses protected environments in its own workflows.
@@ -70,7 +74,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   detect:
     name: Detect affected areas
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 3
     outputs:
       python: ${{ steps.gate-lanes.outputs.python }}
@@ -462,7 +466,7 @@ jobs:
       # to block a merge. A separate run also stops it from holding this
       # run open. That is what blocked ``gh run rerun``.
     if: always()
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 10
     outputs:
       needs-json: ${{ steps.evaluate.outputs.needs-json }}
@@ -497,7 +501,7 @@ jobs:
     name: CI timing report
     needs: [all-checks-pass]
     if: always()
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ github.repository == 'NousResearch/hermes-agent' && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - name: Checkout code

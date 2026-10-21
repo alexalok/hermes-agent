@@ -1,0 +1,43 @@
+# CI on forks
+
+`ci.yaml` and its reusable workflows select runners from `github.repository`.
+`NousResearch/hermes-agent` keeps its Blacksmith and Windows ARM larger runners.
+Other repositories use standard GitHub-hosted runners without configuring a
+runner pool or adding credentials:
+
+| Platform | Fork runner |
+| --- | --- |
+| Linux x64 | `ubuntu-24.04` |
+| macOS arm64 | `macos-latest` |
+| Windows x64 | `windows-2025` |
+| Windows arm64 | `windows-11-arm` |
+
+The caller repository owns the runner allocation even in a reusable workflow.
+A fork-authored PR tested in the upstream repository therefore still uses
+upstream runners. The comparison uses the complete repository name, not the PR
+head owner or just the organization name.
+
+Forks keep every lane, matrix row, test selector, permission, and result gate.
+Jobs normally hosted on larger runners get a 120-minute job budget on standard
+runners. Linux unit tests use the canonical runner's CPU-count default. Windows
+unit tests retain one worker per two CPUs; process-heavy E2E lanes use one worker
+on forks. This preserves headroom for child processes instead of filling the
+smaller VM with concurrent process trees. Per-test and per-file deadlines stay
+unchanged. Fork runs will take longer, especially with cold caches.
+
+The pinned `useblacksmith/checkout` action is portable: its
+[`shouldUseBlacksmithCache` implementation](https://github.com/useblacksmith/checkout/blob/25227e61ff9dafe400e22fa487b673eac4e4409a/src/blacksmith-cache.ts#L162)
+returns false without `BLACKSMITH_VM_ID` and performs a standard checkout.
+The CI graph's nested setup actions already use `actions/cache`. No Blacksmith
+service or token is needed on GitHub-hosted runners.
+
+This policy covers the workflow graph rooted at `ci.yaml`. Standalone release,
+publication, and maintenance workflows retain their own infrastructure policy.
+
+`tests/ci/test_fork_runners.py` traverses that graph and evaluates runner and
+worker expressions for upstream and fork callers. It checks standard-runner
+availability, OS/architecture parity, and worker load per CPU. Existing routing and
+required-result tests cover lane selection and failure propagation.
+
+References: [GitHub runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners),
+[reusable workflow runner context](https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#how-reusable-workflows-use-runners).
