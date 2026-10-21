@@ -6,7 +6,7 @@ import pytest
 
 def relay_module():
     spec = importlib.util.find_spec("cron.approval_relay")
-    assert spec is not None, "Cron workers need a bounded presentation relay"
+    assert spec is not None, "Cron invocations need bounded approval presentation"
     return importlib.import_module("cron.approval_relay")
 
 

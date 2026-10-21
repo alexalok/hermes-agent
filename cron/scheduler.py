@@ -2616,8 +2616,8 @@ def run_job(
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
-        from cron.approval_relay_scope import bind_worker_agent
-        bind_worker_agent(agent)
+        from cron.approval_relay_scope import bind_agent
+        bind_agent(agent)
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
@@ -2830,9 +2830,7 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            from cron.approval_relay_scope import dispatch_scope
-            with dispatch_scope(job):
-                handed_off = _launch_external_cron_worker(job)
+            handed_off = _launch_external_cron_worker(job)
         except Exception as handoff_error:
             # Arbitrary waiter errors must not claim dispatch failure or resend
             # a worker's notice. A recovered unknown execution is different:
@@ -3637,7 +3635,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
 
     from agent.secret_scope import is_multiplex_active
     from cron.scheduler_provider import routed_profile_fire
-    from cron.approval_relay_scope import attach_spawned_worker, dispatch_descriptor
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
         scoped_spawn_lost_user_bus,
@@ -3680,7 +3677,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     "job": job,
                     "profile_home": str(_get_hermes_home().resolve()),
                     "multiplex_active": multiplex_active,
-                    "approval_relay": dispatch_descriptor(),
                 },
                 payload_file,
             )
@@ -3706,7 +3702,6 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 start_new_session=True,
                 creationflags=windows_hide_flags(),
             )
-            attach_spawned_worker(process)
         finally:
             os.close(stderr_fd)
     except BaseException:
@@ -3876,8 +3871,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
 
         GatewayStartupMixin._register_config_hooks(
             "Cron external worker: config hook registration failed", level=logging.WARNING)
-        from cron.approval_relay_scope import worker_scope
-        with use_cron_store(profile_home), worker_scope(payload):
+        with use_cron_store(profile_home):
             if adopt_claimed_execution(execution_id) is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "

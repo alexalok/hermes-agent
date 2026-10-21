@@ -1,4 +1,4 @@
-"""Generic plugin access to supervised cron approval presentation (in-process only)."""
+"""Generic plugin access to canonical cron approval presentation (in-process only)."""
 
 from __future__ import annotations
 
@@ -40,10 +40,12 @@ class CronApprovalService:
                 handle.dispose()
 
     @property
-    def is_worker(self) -> bool:
-        from cron.approval_relay_scope import current_worker
+    def available(self) -> bool:
+        from cron.approval_relay_scope import current_scope
 
-        return current_worker() is not None
+        scope = current_scope()
+        return (not self._closed and not self._ctx._load_abandoned
+                and scope is not None and scope.home == self.home and scope.agent is not None)
 
     def register_presenter(self, callback):
         """Register callback(request, lifetime) -> context manager; unload retires it."""
@@ -66,24 +68,26 @@ class CronApprovalService:
     @contextlib.contextmanager
     def pending(self, *, session_id: str, external_session_id: str, call_id: str, deadline: float, check):
         """Best-effort presentation only. The caller continues its own bounded decision poll."""
-        from cron.approval_relay_scope import current_worker
-        from cron.execution_identity import current_cron_execution
+        from cron.approval_relay_scope import current_scope
 
         check()
-        client, execution = current_worker(), current_cron_execution()
-        stack = contextlib.ExitStack()
+        scope, lifetime = current_scope(), None
         try:
-            if (client is not None and execution is not None
-                    and self.home == str(get_hermes_home().resolve()) == client.descriptor["profile_home"]
-                    and execution.execution_id == client.descriptor["execution_id"]
-                    and execution.job_id == client.descriptor["job_id"]):
-                stack.enter_context(client.pending(
+            if scope is not None and self.available and self.home == scope.home:
+                lifetime = scope.open(
                     self._ctx.plugin_id, session_id=session_id, external_session_id=external_session_id,
                     call_id=call_id, deadline=deadline, check=check,
-                ))
+                )
         except Exception:
             logger.warning("Cron approval presentation unavailable; retaining external approval wait", exc_info=True)
-        with stack:
+        reason = "completed"
+        try:
             check()
             yield
             check()
+        except BaseException:
+            reason = "cancelled"
+            raise
+        finally:
+            if lifetime is not None:
+                lifetime.close(reason)

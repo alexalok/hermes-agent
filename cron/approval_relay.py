@@ -1,6 +1,6 @@
-"""Presentation lifetimes for supervised cron workers; never an execution gate.
+"""Presentation lifetimes for canonical cron executions; never an execution gate.
 
-The gateway owns presenters and immutable dispatch identities. The worker still
+The gateway owns presenters and immutable admission identities. The invocation still
 owns its decision poll, cancellation checks, and original tool invocation.
 """
 
@@ -32,7 +32,7 @@ class ApprovalRequest:
 
 
 class ApprovalLifetime:
-    """Latched cancellation with the worker's original monotonic deadline."""
+    """Latched cancellation with the invocation's original monotonic deadline."""
 
     def __init__(self, deadline: float, live: Callable[[], bool], *, clock=time.monotonic):
         if type(deadline) not in (int, float) or not math.isfinite(deadline):

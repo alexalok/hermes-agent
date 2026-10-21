@@ -299,8 +299,8 @@ agent↔Nous wire contract lives in [Chronos managed-cron contract](chronos-mana
 
 ### Fresh Session Isolation
 
-Trusted plugins can present an external worker's pending approvals through the live
-gateway using the [cron approval presentation relay](./cron-approval-presentation.md).
+Trusted plugins can present a canonical cron invocation's pending approval through
+the [cron approval presentation API](./cron-approval-presentation.md).
 It preserves this session isolation and the separate result-delivery queue.
 
 Each cron job runs in a completely fresh agent session:

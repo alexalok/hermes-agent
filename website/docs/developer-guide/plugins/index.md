@@ -1833,7 +1833,7 @@ it performs no origin, consent or ownership checks for you. Full contract:
 
 ### Know which cron run you are in
 
-For gateway-owned presentation of a supervised worker's pending approval, see
+For gateway-owned presentation of a canonical cron invocation's pending approval, see
 [`ctx.cron_approvals`](../cron-approval-presentation.md). This in-process API carries
 an exact execution lifetime; audit decisions and tool dispatch stay with their
 existing owners.
