@@ -1,6 +1,9 @@
 # CI on forks
 
 `ci.yaml` and its reusable workflows select runners from `github.repository`.
+Independently triggered PR workflows use the same policy, including Nix checks,
+Docker preflight, plugin admission, native payload/SDK checks, Termux checks,
+and label-driven reruns.
 `NousResearch/hermes-agent` keeps its Blacksmith and Windows ARM larger runners.
 Other repositories use standard GitHub-hosted runners without configuring a
 runner pool or adding credentials:
@@ -9,6 +12,7 @@ runner pool or adding credentials:
 | --- | --- |
 | Linux x64 | `ubuntu-24.04` |
 | macOS arm64 | `macos-latest` |
+| Native payload macOS | `macos-15`, `macos-15-intel` (existing standard runners) |
 | Windows x64 | `windows-2025` |
 | Windows arm64 | `windows-11-arm` |
 
@@ -18,8 +22,9 @@ upstream runners. The comparison uses the complete repository name, not the PR
 head owner or just the organization name.
 
 Forks keep every lane, matrix row, test selector, permission, and result gate.
-Jobs normally hosted on larger runners get a 120-minute job budget on standard
-runners. Linux unit tests use the canonical runner's CPU-count default. Windows
+Jobs normally hosted on larger runners get at least a 120-minute job budget on
+standard runners; existing longer budgets remain. Linux unit tests use the
+canonical runner's CPU-count default. Windows
 unit tests retain one worker per two CPUs; process-heavy E2E lanes use one worker
 on forks. This preserves headroom for child processes instead of filling the
 smaller VM with concurrent process trees. Per-test and per-file deadlines stay
@@ -31,11 +36,14 @@ returns false without `BLACKSMITH_VM_ID` and performs a standard checkout.
 The CI graph's nested setup actions already use `actions/cache`. No Blacksmith
 service or token is needed on GitHub-hosted runners.
 
-This policy covers the workflow graph rooted at `ci.yaml`. Standalone release,
-publication, and maintenance workflows retain their own infrastructure policy.
+This policy covers the workflow graph rooted at `ci.yaml` and jobs eligible on
+fork PRs in every independently triggered `pull_request` workflow. Existing
+upstream-only build, release, credential, and publication gates remain intact.
+Release-only and maintenance workflows retain their own infrastructure policy.
 
-`tests/ci/test_fork_runners.py` traverses that graph and evaluates runner and
-worker expressions for upstream and fork callers. It checks standard-runner
+`tests/ci/test_fork_runners.py` traverses that graph, discovers independent PR
+workflows, and evaluates runner and worker expressions for upstream and fork
+callers. It checks standard-runner
 availability, OS/architecture parity, and worker load per CPU. Existing routing and
 required-result tests cover lane selection and failure propagation.
 

@@ -5,6 +5,7 @@ graph. A fork PR running in upstream still uses upstream's runner allocation:
 the workflow repository, not the PR author's repository, owns the resources.
 """
 
+from itertools import product
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,8 @@ _UPSTREAM = "NousResearch/hermes-agent"
 _HOSTED = {
     "ubuntu-24.04": ("Linux", "X64", 4),
     "macos-latest": ("macOS", "ARM64", 3),
+    "macos-15": ("macOS", "ARM64", 3),
+    "macos-15-intel": ("macOS", "X64", 4),
     "windows-2025": ("Windows", "X64", 4),
     "windows-11-arm": ("Windows", "ARM64", 4),
 }
@@ -29,6 +32,7 @@ _MANAGED = {
     "blacksmith-32vcpu-windows-2025": ("Windows", "X64", 32),
     "windows-latest-32-arm-core": ("Windows", "ARM64", 32),
 }
+_UPSTREAM_RUNNERS = {**_HOSTED, **_MANAGED}
 
 
 def _native_jobs():
@@ -51,16 +55,57 @@ def _native_jobs():
             rows = job.get("strategy", {}).get("matrix", {}).get("include", [{}])
             for row in rows:
                 yield f"{filename}/{name}/{row.get('name', '')}", job, row
+    yield from _independent_pr_jobs(yaml, seen)
+
+
+def _independent_pr_jobs(yaml, seen):
+    context = _context("contributor/hermes-agent", {})
+    for path in sorted(_WORKFLOWS.glob("*.y*ml")):
+        if path.name in seen:
+            continue
+        workflow = yaml.load(path.read_text(encoding="utf-8"))
+        if "pull_request" not in workflow.get("on", {}):
+            continue
+        for name, job in workflow["jobs"].items():
+            # Model a labelled PR with all applicable checks requested. Keep
+            # existing upstream-only builds and release-only jobs excluded.
+            if not gha.condition(job.get("if"), context):
+                continue
+            assert "runs-on" in job, f"{path.name}/{name}: model reusable PR workflow"
+            matrix = job.get("strategy", {}).get("matrix", {})
+            assert "exclude" not in matrix, f"{path.name}/{name}: model matrix exclusions"
+            rows = matrix.get("include")
+            if rows is None:
+                assert all(isinstance(values, list) for values in matrix.values())
+                rows = [dict(zip(matrix, values)) for values in product(*matrix.values())]
+            for row in rows:
+                yield f"{path.name}/{name}/{row}", job, row
+
+
+def _render_matrix(value, context):
+    if isinstance(value, dict):
+        return {key: _render_matrix(item, context) for key, item in value.items()}
+    return gha.render(value, context)
 
 
 def _context(repository, row):
     return {
         "github": {
             "repository": repository,
-            "event": {"pull_request": {"head": {"repo": {"full_name": "contributor/hermes-agent"}}}},
+            "event_name": "pull_request",
+            "ref": "refs/pull/2/merge",
+            "event": {
+                "pull_request": {"head": {"repo": {"full_name": "contributor/hermes-agent"}}},
+                "label": {"name": "run-e2e"},
+            },
         },
-        "matrix": {key: gha.render(value, {"github": {"repository": repository}})
-                   for key, value in row.items()},
+        "inputs": {"release": False, "release-phase": ""},
+        "needs": {
+            "mode": {"result": "success", "outputs": {"phase": "standalone", "release": "false"}},
+            "detect": {"result": "success", "outputs": {"nix": "true", "build": "true"}},
+        },
+        "__status__": {"always": True, "success": True, "failure": False, "cancelled": False},
+        "matrix": _render_matrix(row, {"github": {"repository": repository}}),
     }
 
 
@@ -72,8 +117,8 @@ def test_fork_ci_schedules_every_platform_without_managed_runners(repository):
         hosted = gha.render(job["runs-on"], _context(repository, row))
         managed = gha.render(job["runs-on"], _context(_UPSTREAM, row))
         assert hosted in _HOSTED, f"{label}: fork requires unavailable runner {hosted!r}"
-        assert managed in _MANAGED, f"{label}: upstream lost its runner allocation {managed!r}"
-        assert _HOSTED[hosted][:2] == _MANAGED[managed][:2], f"{label}: fork changed OS/architecture"
+        assert managed in _UPSTREAM_RUNNERS, f"{label}: unknown upstream runner {managed!r}"
+        assert _HOSTED[hosted][:2] == _UPSTREAM_RUNNERS[managed][:2], f"{label}: fork changed OS/architecture"
 
 
 def test_fork_workers_do_not_increase_load_per_cpu():
@@ -85,7 +130,7 @@ def test_fork_workers_do_not_increase_load_per_cpu():
         ctx["runner"] = {"os": os_name, "arch": arch}
         upstream = {**_context(_UPSTREAM, row), "runner": ctx["runner"]}
         managed = gha.render(job["runs-on"], upstream)
-        managed_cpus = _MANAGED[managed][2]
+        managed_cpus = _UPSTREAM_RUNNERS[managed][2]
         for step in job.get("steps", []):
             env = {**job.get("env", {}), **step.get("env", {})}
             setting = env.get("HERMES_TEST_WORKERS", "")
