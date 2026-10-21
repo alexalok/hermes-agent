@@ -137,17 +137,32 @@ class _SourceVisitor(ast.NodeVisitor):
         self._flag_write(node.target, node.lineno)
         self.generic_visit(node)
 
+    def _flag_ctx_member(self, name: str, line: int) -> None:
+        if name in self._unsupported:
+            self.reasons.append(f"{self.rel}:{line} ctx.{name}: {self._unsupported[name]}")
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        # A facade can be used through a nested call or saved for later use.
+        if isinstance(node.ctx, ast.Load):
+            self._flag_ctx_member(node.attr, node.lineno)
+        self.generic_visit(node)
+
+    def _flag_getattr(self, node: ast.Call) -> None:
+        if isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) > 1:
+            name = node.args[1]
+            if isinstance(name, ast.Constant) and isinstance(name.value, str):
+                self._flag_ctx_member(name.value, node.lineno)
+
     def visit_Call(self, node: ast.Call) -> None:
         func = node.func
+        self._flag_getattr(node)
         if isinstance(func, ast.Name) and func.id == "setattr" and node.args:
             owner = self._resolve(node.args[0])
             if owner:
                 self.reasons.append(f"{self.rel}:{node.lineno} setattr() on {owner} (patches a Hermes module)")
         if isinstance(func, ast.Attribute):
             name = func.attr
-            if name in self._unsupported:
-                self.reasons.append(f"{self.rel}:{node.lineno} ctx.{name}(): {self._unsupported[name]}")
-            elif name in self._skipped:
+            if name in self._skipped:
                 self.notes.append(f"ctx.{name}() is skipped in the host ({self._skipped[name]})")
             if name.startswith("register_") or name in {"subscribe", "dispatch_tool", "inject_message", "emit"}:
                 self.ctx_methods.add(name)
