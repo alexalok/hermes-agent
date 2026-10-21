@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -80,13 +81,17 @@ def test_result_finished_at_is_stamped_after_the_r6_release_wait(tmp_path: Path)
     holder = None
     ready = tmp_path / 'checkout-lock.ready'
     released = tmp_path / 'checkout-lock-release.json'
+    # Inline source mentions the update command and triggers the live-system guard.
+    holder_script = tmp_path / 'checkout_lock_holder.py'
+    holder_script.write_text(_CHECKOUT_HOLDER, encoding='utf-8')
 
     def hold_checkout(home: Path, install: Path) -> None:
         nonlocal holder
         holder = subprocess.Popen(
-            [sys.executable, '-c', _CHECKOUT_HOLDER, str(install / '.hermes-update.lock'),
+            [sys.executable, str(holder_script), str(install / '.hermes-update.lock'),
              str(home), str(ready), str(released)],
-            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            cwd=tmp_path, env={**os.environ, 'PYTHONPATH': str(ROOT)},
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         wait_until(lambda: ready.exists() or holder.poll() is not None,
                    timeout=30, what='checkout lock holder readiness')
