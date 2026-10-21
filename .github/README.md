@@ -27,8 +27,10 @@ standard runners; existing longer budgets remain. Linux unit tests use the
 canonical runner's CPU-count default. Windows
 unit tests retain one worker per two CPUs; process-heavy E2E lanes use one worker
 on forks. This preserves headroom for child processes instead of filling the
-smaller VM with concurrent process trees. Per-test and per-file deadlines stay
-unchanged. Fork runs will take longer, especially with cold caches.
+smaller VM with concurrent process trees. Fork JS checks run one workspace check
+at a time because each check can use its own CPU-sized worker pool; the scheduler
+still runs every check and reports all failures. Per-test and per-file deadlines
+stay unchanged. Fork runs will take longer, especially with cold caches.
 
 The pinned `useblacksmith/checkout` action is portable: its
 [`shouldUseBlacksmithCache` implementation](https://github.com/useblacksmith/checkout/blob/25227e61ff9dafe400e22fa487b673eac4e4409a/src/blacksmith-cache.ts#L162)

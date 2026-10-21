@@ -7,6 +7,7 @@ the workflow repository, not the PR author's repository, owns the resources.
 
 from itertools import product
 from pathlib import Path
+import shlex
 
 import pytest
 from ruamel.yaml import YAML
@@ -141,3 +142,13 @@ def test_fork_workers_do_not_increase_load_per_cpu():
             managed_workers = int(gha.render(setting, upstream) or managed_cpus)
             capacity = max(1, managed_workers * cpus // managed_cpus)
             assert 0 < workers <= min(cpus, capacity), f"{label}: {workers} workers exceed capacity {capacity}"
+
+
+@pytest.mark.parametrize("repository, concurrency", [(_UPSTREAM, None), ("contributor/hermes-agent", 1)])
+def test_workspace_worker_pools_do_not_compete_on_fork_runners(repository, concurrency):
+    workflow = YAML(typ="safe").load((_WORKFLOWS / "js-tests.yml").read_text(encoding="utf-8"))
+    step = next(step for step in workflow["jobs"]["check"]["steps"]
+                if step.get("name") == "Run all workspace checks")
+    command = shlex.split(gha.render(step["run"], _context(repository, {})))
+    selected = int(command[command.index("--concurrency") + 1]) if "--concurrency" in command else None
+    assert selected == concurrency
