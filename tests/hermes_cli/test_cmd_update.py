@@ -106,7 +106,8 @@ class TestGitTrampolineSelfHeal:
         assert result == git_cmd
         run.assert_not_called()
 
-    def test_portable_git_candidates_check_shared_root_first(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("layout", ["ucrt64", "mingw64", "clangarm64", "mingw32"])
+    def test_portable_git_candidates_check_shared_root_first(self, tmp_path, monkeypatch, layout):
         # Profile-scoped layout: HERMES_HOME = <root>/profiles/foo, but the
         # PortableGit tree lives under the SHARED root (monerostar review on
         # #88136). The candidate list must check get_default_hermes_root()
@@ -120,10 +121,13 @@ class TestGitTrampolineSelfHeal:
         monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: root)
         monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: profile_home)
 
+        shared_git = root / "git" / layout / "libexec" / "git-core" / "git.exe"
+        profile_git = profile_home / "git" / layout / "libexec" / "git-core" / "git.exe"
+        for candidate in (shared_git, profile_git):
+            candidate.parent.mkdir(parents=True)
+            candidate.touch()
+
         candidates = _portable_git_candidates()
-        assert candidates[0] == (
-            root / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
-        assert candidates[1] == (
-            profile_home / "git" / "mingw64" / "libexec" / "git-core" / "git.exe"
-        )
+        assert next((c for c in candidates if c.is_file()), None) == shared_git
+        shared_git.unlink()
+        assert next((c for c in candidates if c.is_file()), None) == profile_git
