@@ -36,7 +36,7 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from cron.worker_bootstrap import WORKER_MARKER, finish_worker_boot
+from cron.worker_bootstrap import finish_worker_boot
 from hermes_constants import get_hermes_home, hermes_home_key
 from hermes_cli.observability.shared_metrics_gateway import note_cron_execution, note_cron_skipped
 from cron.env_settings import cron_env_setting
@@ -2616,6 +2616,8 @@ def run_job(
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
             session_db=_session_db)
+        from cron.approval_relay_scope import bind_worker_agent
+        bind_worker_agent(agent)
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
@@ -2828,7 +2830,9 @@ def run_one_job(
     external_owner = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER") == execution_id
     if not external_owner:
         try:
-            handed_off = _launch_external_cron_worker(job)
+            from cron.approval_relay_scope import dispatch_scope
+            with dispatch_scope(job):
+                handed_off = _launch_external_cron_worker(job)
         except Exception as handoff_error:
             # Arbitrary waiter errors must not claim dispatch failure or resend
             # a worker's notice. A recovered unknown execution is different:
@@ -3633,11 +3637,10 @@ def _launch_external_cron_worker(job: dict) -> bool:
 
     from agent.secret_scope import is_multiplex_active
     from cron.scheduler_provider import routed_profile_fire
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from cron.approval_relay_scope import attach_spawned_worker, dispatch_descriptor
     from tools.process_registry import (
         restart_safe_gateway_child_argv,
         scoped_spawn_lost_user_bus,
-        systemd_user_bus_env,
     )
 
     # A fire routed to another profile is multiplexed at this handoff even when the process flag is
@@ -3677,6 +3680,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                     "job": job,
                     "profile_home": str(_get_hermes_home().resolve()),
                     "multiplex_active": multiplex_active,
+                    "approval_relay": dispatch_descriptor(),
                 },
                 payload_file,
             )
@@ -3686,36 +3690,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
         payload_path.unlink(missing_ok=True)
         raise
 
-    profile_home = _get_hermes_home().resolve()
-    # Same hydrate -> scope -> (routed) multiplex-context install the in-process fire uses, for exactly
-    # the env build; the helper's reset order keeps the context from outliving its scope.
-    with _fire_secret_scope():
-        # No restore_managed_env here: the worker re-runs load_hermes_dotenv -> _apply_managed_env at
-        # import, and strip_launch_profile_env leaves managed keys in place.
-        worker_env = strip_launch_profile_env(build_subprocess_env(
-            scrub_secrets=multiplex_active,
-            inherit_profile_home=True,
-            extra={"HERMES_HOME": str(profile_home)},
-        ))
-    worker_env = systemd_user_bus_env(worker_env)
-    # Unattended worker: the gateway sets HERMES_EXEC_ASK at startup (interactive launches set
-    # the other two), and an inherited presence var makes every env-fallback consumer in the
-    # child (`_is_interactive_cli`, sudo prompting, `check_cronjob_requirements`) believe a
-    # human is present to answer (#110932).
-    for _presence_var in (
-        "HERMES_INTERACTIVE",
-        "HERMES_GATEWAY_SESSION",
-        "HERMES_EXEC_ASK",
-    ):
-        worker_env.pop(_presence_var, None)
-    # `-m cron.scheduler` has no hermes_cli.main bootstrap; pin this checkout explicitly
-    # (PYTHONSAFEPATH / stale editable mapping, #112729), hand the child the committed
-    # dependency generation (#122222), and mark it so its own entry runs the PM dependency
-    # boot. See cron/scheduler_worker_env.py and cron/worker_bootstrap.py.
-    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+    from cron.scheduler_worker_env import build_external_worker_env
     repo_root = Path(__file__).resolve().parent.parent
-    worker_env = pin_hermes_tree_on_pythonpath(worker_env, repo_root)
-    worker_env[WORKER_MARKER] = "1"
+    worker_env = build_external_worker_env(_get_hermes_home().resolve(), multiplex_active, repo_root)
     try:
         stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
@@ -3729,6 +3706,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
                 start_new_session=True,
                 creationflags=windows_hide_flags(),
             )
+            attach_spawned_worker(process)
         finally:
             os.close(stderr_fd)
     except BaseException:
@@ -3898,7 +3876,8 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
 
         GatewayStartupMixin._register_config_hooks(
             "Cron external worker: config hook registration failed", level=logging.WARNING)
-        with use_cron_store(profile_home):
+        from cron.approval_relay_scope import worker_scope
+        with use_cron_store(profile_home), worker_scope(payload):
             if adopt_claimed_execution(execution_id) is None:
                 logger.error(
                     "Cron external worker refused execution %s: durable ownership "

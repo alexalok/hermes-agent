@@ -238,6 +238,15 @@ def resolve_shutdown_watchdog_delay(
     return _coerce_float(drain_timeout, 0.0) + grace
 
 
+def effective_watchdog_leash(runner: object) -> float:
+    """Thread-watchdog leash for the stop in progress: effective drain + grace, clamped under
+    launchd's live ``ExitTimeOut`` minus the dump margin. Lives here (not in gateway.restart)
+    because restart.py cannot import shutdown_watchdog without a cycle."""
+    from gateway.restart import effective_stop_drain_timeout, effective_stop_watchdog_delay
+
+    return effective_stop_watchdog_delay(runner, resolve_shutdown_watchdog_delay(effective_stop_drain_timeout(runner)))
+
+
 def _write_watchdog_dump(dump_path: Path, *, delay_s: float, snapshot: Optional[dict[str, Any]],
                          event: str = "shutdown_watchdog_fired") -> None:
     """Best-effort faulthandler + metadata dump before hard-exit (file, then stderr)."""

@@ -1649,6 +1649,8 @@ class GatewayStartupMixin:
             return True
         if self._start_check_access_policy():
             return True
+        from cron.approval_relay_scope import start_gateway_relays
+        start_gateway_relays()
         await self._start_recover_previous_run()
         # Serialize startup restore against inbound: adapters receive as soon as they connect, so inbound
         # queues until every synthetic resume turn has finished.
