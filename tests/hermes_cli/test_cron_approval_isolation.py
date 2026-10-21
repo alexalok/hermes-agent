@@ -21,6 +21,9 @@ from tests.hermes_cli.test_plugin_host import _home_with_plugins
     "ctx, context = None, ctx\n    context.cron_approvals.register_presenter(present)",
     "*unused, context = None, ctx\n    context.cron_approvals.register_presenter(present)",
     "context, *unused = ctx, None\n    context.cron_approvals.register_presenter(present)",
+    "for context in [ctx]:\n        context.cron_approvals.register_presenter(present)",
+    "for context, unused in [(ctx, None)]:\n        context.cron_approvals.register_presenter(present)",
+    "(context := ctx)\n    context.cron_approvals.register_presenter(present)",
 ])
 def cron_plugin(request):
     return f'''
@@ -73,6 +76,10 @@ def register(ctx):
     ("def register(ctx):\n    context = ctx\n    def callback(context):\n        context.cron_approvals", True),
     ("def register(ctx):\n    def register(settings):\n        settings.cron_approvals", True),
     ("def register(ctx):\n    context = ctx\n    context, unused = None, None\n    context.cron_approvals", True),
+    ("def register(ctx):\n    context = ctx\n    for context in items:\n        context.cron_approvals", True),
+    ("def register(ctx):\n    context = ctx\n    with manager() as context:\n        context.cron_approvals", True),
+    ("def register(ctx):\n    context = ctx\n    try:\n        operation()\n    except Exception as context:\n        context.cron_approvals", True),
+    ("def register(ctx):\n    context = ctx\n    (context := settings)\n    context.cron_approvals", True),
 ])
 def test_context_receiver_scope(tmp_path, source, host_ready):
     from hermes_cli.plugin_isolation_audit import audit_plugin_dir
@@ -94,6 +101,7 @@ def test_context_receiver_scope(tmp_path, source, host_ready):
     ("(lambda ctx=ctx.cron_approvals: ctx)()", False),
     ("[item for item in ctx.cron_approvals]", False),
     ("[ctx for ctx in ctx.cron_approvals]", False),
+    ("[context.cron_approvals for context in [ctx]]", False),
 ])
 def test_expression_scope_shadows_context(tmp_path, expression, host_ready):
     from hermes_cli.plugin_isolation_audit import audit_plugin_dir
@@ -106,11 +114,32 @@ def test_expression_scope_shadows_context(tmp_path, expression, host_ready):
 
 @pytest.mark.platforms("any")  # Exercise the real per-profile child host.
 def test_isolated_cron_plugin_load_reports_boundary_reason(tmp_path, monkeypatch, cron_plugin):
+    _assert_isolated_refusal(tmp_path, monkeypatch, cron_plugin)
+
+
+@pytest.mark.platforms("any")
+def test_dynamic_context_lookup_is_refused_by_runtime(tmp_path, monkeypatch):
+    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+
+    source = '''
+def register(ctx):
+    contexts = {"gateway": ctx}
+    contexts["gateway"].cron_approvals.register_presenter(None)
+'''
+    plugin = tmp_path / "dynamic"
+    plugin.mkdir()
+    (plugin / "__init__.py").write_text(source)
+    # The static audit does not interpret containers or execute plugin code.
+    assert audit_plugin_dir(plugin).host_ready
+    _assert_isolated_refusal(tmp_path, monkeypatch, source)
+
+
+def _assert_isolated_refusal(tmp_path, monkeypatch, source):
     from cron.approval_relay import presenters_for
     from hermes_cli.plugins import PluginManager
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "os-home")
-    home = _home_with_plugins(tmp_path, monkeypatch, {"cronprobe": cron_plugin})
+    home = _home_with_plugins(tmp_path, monkeypatch, {"cronprobe": source})
     manager = PluginManager()
     try:
         manager.discover_and_load()

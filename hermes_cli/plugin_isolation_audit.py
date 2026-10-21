@@ -2,8 +2,11 @@
 
 Reads a plugin directory's manifest and Python source (never imports it) and reports whether the
 plugin reaches Hermes only through ``ctx`` surfaces that cross the host boundary. The rules come
-from :mod:`hermes_cli.plugin_isolation`, the same tables the host enforces at runtime, so a plugin
-the audit calls host-ready loads in the host, and one it flags fails there with the same reason.
+from :mod:`hermes_cli.plugin_isolation`, the same tables the host enforces at runtime.
+This is an advisory syntax audit, not an interpreter or a guarantee that a plugin will load.
+It follows local name aliases, literal unpacking and uniform literal iteration. Container
+lookups, call results, object attributes, arbitrary iterables and cross-function/control-flow
+data flow are not inferred; the host still refuses unsupported access at runtime.
 
 What it cannot see in a process boundary it flags:
 
@@ -166,6 +169,12 @@ class _SourceVisitor(ast.NodeVisitor):
             return tuple(self._ctx_value(item) for item in node.elts)
         return self._is_ctx(node)
 
+    def _iteration_value(self, node: ast.AST) -> _CtxValue:
+        items = self._ctx_value(node)
+        if isinstance(items, tuple) and items and len(set(items)) == 1:
+            return items[0]
+        return False
+
     def _bind_ctx(self, node: ast.AST, value: _CtxValue) -> None:
         if isinstance(node, ast.Name):
             if value is True:
@@ -184,6 +193,38 @@ class _SourceVisitor(ast.NodeVisitor):
                 values = (False,) * len(node.elts)
             for target, item in zip(node.elts, values):
                 self._bind_ctx(target, item)
+
+    def visit_For(self, node: ast.For) -> None:
+        self.visit(node.iter)
+        self._bind_ctx(node.target, self._iteration_value(node.iter))
+        self.visit(node.target)
+        for statement in node.body + node.orelse:
+            self.visit(statement)
+
+    visit_AsyncFor = visit_For
+
+    def visit_With(self, node: ast.With) -> None:
+        for item in node.items:
+            self.visit(item.context_expr)
+            if item.optional_vars is not None:
+                self._bind_ctx(item.optional_vars, False)
+                self.visit(item.optional_vars)
+        for statement in node.body:
+            self.visit(statement)
+
+    visit_AsyncWith = visit_With
+
+    def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+        if node.type is not None:
+            self.visit(node.type)
+        if node.name:
+            self._ctx_names.discard(node.name)
+        for statement in node.body:
+            self.visit(statement)
+
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        self.visit(node.value)
+        self._bind_ctx(node.target, self._ctx_value(node.value))
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         positional = node.args.posonlyargs + node.args.args
@@ -218,7 +259,7 @@ class _SourceVisitor(ast.NodeVisitor):
         try:
             for generator in node.generators:
                 self.visit(generator.iter)
-                self._bind_ctx(generator.target, False)
+                self._bind_ctx(generator.target, self._iteration_value(generator.iter))
                 for condition in generator.ifs:
                     self.visit(condition)
             if isinstance(node, ast.DictComp):
