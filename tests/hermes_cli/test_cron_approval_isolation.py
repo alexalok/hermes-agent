@@ -11,6 +11,11 @@ from tests.hermes_cli.test_plugin_host import _home_with_plugins
     "ctx.cron_approvals.register_presenter(present)",
     "approvals = ctx.cron_approvals\n    approvals.register_presenter(present)",
     "getattr(ctx, 'cron_approvals').register_presenter(present)",
+    "context = ctx\n    context.cron_approvals.register_presenter(present)",
+    "context = ctx\n    getattr(context, 'cron_approvals').register_presenter(present)",
+    "context: object = ctx\n    context.cron_approvals.register_presenter(present)",
+    "ctx: object\n    ctx.cron_approvals.register_presenter(present)",
+    "ctx = ctx.cron_approvals\n    ctx.register_presenter(present)",
 ])
 def cron_plugin(request):
     return f'''
@@ -33,6 +38,43 @@ def test_cron_facade_audit_reports_in_process_only(tmp_path, cron_plugin):
     report = audit_plugin_dir(plugin)
     assert report.verdict == "in_process"
     assert any("cron_approvals" in reason for reason in report.reasons)
+
+
+@pytest.mark.parametrize("access", [
+    "settings.cron_approvals",
+    "getattr(settings, 'cron_approvals')",
+])
+def test_unrelated_approval_settings_remain_host_ready(tmp_path, access):
+    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+
+    plugin = tmp_path / "guard"
+    plugin.mkdir()
+    (plugin / "__init__.py").write_text(f'''
+from types import SimpleNamespace
+
+def register(ctx):
+    settings = SimpleNamespace(cron_approvals=True)
+    enabled = {access}
+''')
+    assert audit_plugin_dir(plugin).host_ready
+
+
+@pytest.mark.parametrize(("source", "host_ready"), [
+    ("def register(context):\n    context.cron_approvals", False),
+    ("def install(ctx):\n    ctx.cron_approvals", False),
+    ("def register(ctx):\n    def callback():\n        ctx.cron_approvals", False),
+    ("class Settings:\n    def register(self, item):\n        return self.cron_approvals", True),
+    ("def register(ctx):\n    context = ctx\n    context = object()\n    context.cron_approvals", True),
+    ("def register(ctx):\n    context = ctx\n    def callback(context):\n        context.cron_approvals", True),
+    ("def register(ctx):\n    def register(settings):\n        settings.cron_approvals", True),
+])
+def test_context_receiver_scope(tmp_path, source, host_ready):
+    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+
+    plugin = tmp_path / "guard"
+    plugin.mkdir()
+    (plugin / "__init__.py").write_text(source)
+    assert audit_plugin_dir(plugin).host_ready is host_ready
 
 
 @pytest.mark.platforms("any")  # Exercise the real per-profile child host.

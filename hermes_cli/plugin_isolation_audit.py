@@ -83,13 +83,17 @@ def _python_files(plugin_dir: Path) -> list[Path]:
 
 
 class _SourceVisitor(ast.NodeVisitor):
-    """Collects ctx method calls, Hermes-module aliases, and writes through those aliases."""
+    """Collect ctx calls and aliases; dynamic cross-function data flow is not inferred."""
 
     def __init__(self, rel: str, *, model_provider: bool = False):
         from hermes_cli.plugin_isolation import (
-            HOST_DEGRADED_HOOKS, HOST_OBJECT_BASES, HOST_SKIPPED_CTX_METHODS, HOST_UNSUPPORTED_CTX_METHODS,
+            HOST_DEGRADED_HOOKS, HOST_OBJECT_BASES, HOST_SKIPPED_CTX_METHODS,
+            HOST_UNSUPPORTED_CTX_FACADES, HOST_UNSUPPORTED_CTX_METHODS,
         )
         self._unsupported, self._skipped = HOST_UNSUPPORTED_CTX_METHODS, HOST_SKIPPED_CTX_METHODS
+        self._ctx_facades = HOST_UNSUPPORTED_CTX_FACADES
+        self._ctx_names: set[str] = set()
+        self._scope_depth = 0
         self._degraded, self._object_methods = HOST_DEGRADED_HOOKS, HOST_OBJECT_BASES
         self.rel = rel
         # A model-provider plugin's register_provider() call is its contract; the host captures it.
@@ -129,13 +133,52 @@ class _SourceVisitor(ast.NodeVisitor):
                                     f"attribute; the host's copy is not the one Hermes runs)")
 
     def visit_Assign(self, node: ast.Assign) -> None:
+        is_ctx = self._is_ctx(node.value)
+        self.generic_visit(node)
         for target in node.targets:
             self._flag_write(target, node.lineno)
+            self._bind_ctx(target, is_ctx)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        is_ctx = self._is_ctx(node.value)
         self.generic_visit(node)
+        self._flag_write(node.target, node.lineno)
+        if node.value is not None:
+            self._bind_ctx(node.target, is_ctx)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        self._flag_write(node.target, node.lineno)
         self.generic_visit(node)
+        self._flag_write(node.target, node.lineno)
+        self._bind_ctx(node.target, False)
+
+    def _is_ctx(self, node: Optional[ast.AST]) -> bool:
+        return isinstance(node, ast.Name) and node.id in self._ctx_names
+
+    def _bind_ctx(self, node: ast.AST, is_ctx: bool) -> None:
+        if isinstance(node, ast.Name):
+            if is_ctx:
+                self._ctx_names.add(node.id)
+            else:
+                self._ctx_names.discard(node.id)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        positional = node.args.posonlyargs + node.args.args
+        params = {arg.arg for arg in positional + node.args.kwonlyargs}
+        params.update(arg.arg for arg in (node.args.vararg, node.args.kwarg) if arg is not None)
+        outer = self._ctx_names
+        # Helpers conventionally name their context parameter ctx. Only a
+        # module-level register function receives a context regardless of name.
+        self._ctx_names = (outer - params) | (params & {"ctx"})
+        if node.name == "register" and positional and self._scope_depth == 0:
+            self._ctx_names.add(positional[0].arg)
+        self._scope_depth += 1
+        try:
+            self.generic_visit(node)
+        finally:
+            self._scope_depth -= 1
+            self._ctx_names = outer
+
+    visit_AsyncFunctionDef = visit_FunctionDef
 
     def _flag_ctx_member(self, name: str, line: int) -> None:
         if name in self._unsupported:
@@ -143,12 +186,13 @@ class _SourceVisitor(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         # A facade can be used through a nested call or saved for later use.
-        if isinstance(node.ctx, ast.Load):
+        if isinstance(node.ctx, ast.Load) and self._is_ctx(node.value):
             self._flag_ctx_member(node.attr, node.lineno)
         self.generic_visit(node)
 
     def _flag_getattr(self, node: ast.Call) -> None:
-        if isinstance(node.func, ast.Name) and node.func.id == "getattr" and len(node.args) > 1:
+        if (isinstance(node.func, ast.Name) and node.func.id == "getattr"
+                and len(node.args) > 1 and self._is_ctx(node.args[0])):
             name = node.args[1]
             if isinstance(name, ast.Constant) and isinstance(name.value, str):
                 self._flag_ctx_member(name.value, node.lineno)
@@ -162,6 +206,10 @@ class _SourceVisitor(ast.NodeVisitor):
                 self.reasons.append(f"{self.rel}:{node.lineno} setattr() on {owner} (patches a Hermes module)")
         if isinstance(func, ast.Attribute):
             name = func.attr
+            # Preserve the existing method-call heuristic; facade accesses above
+            # require a known context receiver, even when the facade is called.
+            if name in self._unsupported and name not in self._ctx_facades and not self._is_ctx(func.value):
+                self._flag_ctx_member(name, node.lineno)
             if name in self._skipped:
                 self.notes.append(f"ctx.{name}() is skipped in the host ({self._skipped[name]})")
             if name.startswith("register_") or name in {"subscribe", "dispatch_tool", "inject_message", "emit"}:
@@ -191,7 +239,14 @@ class _SourceVisitor(ast.NodeVisitor):
                                        and item.name == "create_client" for item in node.body):
             self.reasons.append(f"{self.rel}:{node.lineno} {node.name}.create_client() returns a live SDK "
                                 f"client (model-provider profiles cross the host as data + methods)")
-        self.generic_visit(node)
+        outer = self._ctx_names
+        self._ctx_names = outer.copy()
+        self._scope_depth += 1
+        try:
+            self.generic_visit(node)
+        finally:
+            self._scope_depth -= 1
+            self._ctx_names = outer
 
 
 def audit_plugin_dir(plugin_dir: Path, manifest: Optional[Mapping[str, Any]] = None) -> IsolationReport:
