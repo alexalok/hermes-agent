@@ -45,6 +45,13 @@ _MANIFEST_KIND_REASONS: dict[str, str] = {
 }
 _STREAMING_MARKERS = ("StreamingResponse", "EventSourceResponse", ".websocket(", "WebSocket")
 _SKIP_DIRS = frozenset({"tests", "test", ".git", "__pycache__", "node_modules", ".venv", "venv", "docs"})
+_CtxValue = bool | tuple["_CtxValue", ...]
+
+
+def _parameter_names(args: ast.arguments) -> set[str]:
+    names = {arg.arg for arg in args.posonlyargs + args.args + args.kwonlyargs}
+    names.update(arg.arg for arg in (args.vararg, args.kwarg) if arg is not None)
+    return names
 
 
 @dataclass
@@ -133,18 +140,18 @@ class _SourceVisitor(ast.NodeVisitor):
                                     f"attribute; the host's copy is not the one Hermes runs)")
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        is_ctx = self._is_ctx(node.value)
+        value = self._ctx_value(node.value)
         self.generic_visit(node)
         for target in node.targets:
             self._flag_write(target, node.lineno)
-            self._bind_ctx(target, is_ctx)
+            self._bind_ctx(target, value)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        is_ctx = self._is_ctx(node.value)
+        value = self._ctx_value(node.value)
         self.generic_visit(node)
         self._flag_write(node.target, node.lineno)
         if node.value is not None:
-            self._bind_ctx(node.target, is_ctx)
+            self._bind_ctx(node.target, value)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         self.generic_visit(node)
@@ -154,17 +161,33 @@ class _SourceVisitor(ast.NodeVisitor):
     def _is_ctx(self, node: Optional[ast.AST]) -> bool:
         return isinstance(node, ast.Name) and node.id in self._ctx_names
 
-    def _bind_ctx(self, node: ast.AST, is_ctx: bool) -> None:
+    def _ctx_value(self, node: Optional[ast.AST]) -> _CtxValue:
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return tuple(self._ctx_value(item) for item in node.elts)
+        return self._is_ctx(node)
+
+    def _bind_ctx(self, node: ast.AST, value: _CtxValue) -> None:
         if isinstance(node, ast.Name):
-            if is_ctx:
+            if value is True:
                 self._ctx_names.add(node.id)
             else:
                 self._ctx_names.discard(node.id)
+        elif isinstance(node, ast.Starred):
+            self._bind_ctx(node.value, False)  # A starred target receives a list, not a context.
+        elif isinstance(node, (ast.Tuple, ast.List)):
+            values = value if isinstance(value, tuple) else ()
+            star = next((i for i, item in enumerate(node.elts) if isinstance(item, ast.Starred)), None)
+            if star is not None and len(values) >= len(node.elts) - 1:
+                tail = len(node.elts) - star - 1
+                values = values[:star] + (False,) + (values[-tail:] if tail else ())
+            if len(values) != len(node.elts):
+                values = (False,) * len(node.elts)
+            for target, item in zip(node.elts, values):
+                self._bind_ctx(target, item)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         positional = node.args.posonlyargs + node.args.args
-        params = {arg.arg for arg in positional + node.args.kwonlyargs}
-        params.update(arg.arg for arg in (node.args.vararg, node.args.kwarg) if arg is not None)
+        params = _parameter_names(node.args)
         outer = self._ctx_names
         # Helpers conventionally name their context parameter ctx. Only a
         # module-level register function receives a context regardless of name.
@@ -179,6 +202,37 @@ class _SourceVisitor(ast.NodeVisitor):
             self._ctx_names = outer
 
     visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self.visit(node.args)  # Defaults evaluate in the enclosing scope.
+        outer = self._ctx_names
+        self._ctx_names = outer - _parameter_names(node.args)
+        try:
+            self.visit(node.body)
+        finally:
+            self._ctx_names = outer
+
+    def _visit_comprehension(self, node: ast.AST) -> None:
+        outer = self._ctx_names
+        self._ctx_names = outer.copy()
+        try:
+            for generator in node.generators:
+                self.visit(generator.iter)
+                self._bind_ctx(generator.target, False)
+                for condition in generator.ifs:
+                    self.visit(condition)
+            if isinstance(node, ast.DictComp):
+                self.visit(node.key)
+                self.visit(node.value)
+            else:
+                self.visit(node.elt)
+        finally:
+            self._ctx_names = outer
+
+    visit_ListComp = _visit_comprehension
+    visit_SetComp = _visit_comprehension
+    visit_DictComp = _visit_comprehension
+    visit_GeneratorExp = _visit_comprehension
 
     def _flag_ctx_member(self, name: str, line: int) -> None:
         if name in self._unsupported:

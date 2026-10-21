@@ -16,6 +16,11 @@ from tests.hermes_cli.test_plugin_host import _home_with_plugins
     "context: object = ctx\n    context.cron_approvals.register_presenter(present)",
     "ctx: object\n    ctx.cron_approvals.register_presenter(present)",
     "ctx = ctx.cron_approvals\n    ctx.register_presenter(present)",
+    "context, unused = ctx, None\n    context.cron_approvals.register_presenter(present)",
+    "[unused, [context]] = [None, [ctx]]\n    context.cron_approvals.register_presenter(present)",
+    "ctx, context = None, ctx\n    context.cron_approvals.register_presenter(present)",
+    "*unused, context = None, ctx\n    context.cron_approvals.register_presenter(present)",
+    "context, *unused = ctx, None\n    context.cron_approvals.register_presenter(present)",
 ])
 def cron_plugin(request):
     return f'''
@@ -67,6 +72,7 @@ def register(ctx):
     ("def register(ctx):\n    context = ctx\n    context = object()\n    context.cron_approvals", True),
     ("def register(ctx):\n    context = ctx\n    def callback(context):\n        context.cron_approvals", True),
     ("def register(ctx):\n    def register(settings):\n        settings.cron_approvals", True),
+    ("def register(ctx):\n    context = ctx\n    context, unused = None, None\n    context.cron_approvals", True),
 ])
 def test_context_receiver_scope(tmp_path, source, host_ready):
     from hermes_cli.plugin_isolation_audit import audit_plugin_dir
@@ -74,6 +80,27 @@ def test_context_receiver_scope(tmp_path, source, host_ready):
     plugin = tmp_path / "guard"
     plugin.mkdir()
     (plugin / "__init__.py").write_text(source)
+    assert audit_plugin_dir(plugin).host_ready is host_ready
+
+
+@pytest.mark.parametrize(("expression", "host_ready"), [
+    ("(lambda ctx: ctx.cron_approvals)(settings)", True),
+    ("[ctx.cron_approvals for ctx in [settings]]", True),
+    ("{ctx.cron_approvals for ctx in [settings]}", True),
+    ("{ctx.cron_approvals: True for ctx in [settings]}", True),
+    ("(ctx.cron_approvals for ctx in [settings])", True),
+    ("[value for ctx in [settings] for value in ctx.cron_approvals]", True),
+    ("(lambda: ctx.cron_approvals)()", False),
+    ("(lambda ctx=ctx.cron_approvals: ctx)()", False),
+    ("[item for item in ctx.cron_approvals]", False),
+    ("[ctx for ctx in ctx.cron_approvals]", False),
+])
+def test_expression_scope_shadows_context(tmp_path, expression, host_ready):
+    from hermes_cli.plugin_isolation_audit import audit_plugin_dir
+
+    plugin = tmp_path / "guard"
+    plugin.mkdir()
+    (plugin / "__init__.py").write_text(f"def register(ctx):\n    result = {expression}\n")
     assert audit_plugin_dir(plugin).host_ready is host_ready
 
 
