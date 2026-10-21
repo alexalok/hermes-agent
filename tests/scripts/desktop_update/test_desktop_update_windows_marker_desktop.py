@@ -11,12 +11,11 @@ import pytest
 
 from tests.installation_launcher_fixture import publish_fixture_launcher
 from tests.scripts.desktop_update.legacy_desktop_reader import legacy_read
-from tests.scripts.desktop_update.windows_handoff_support import _HeldLock
+from tests.scripts.desktop_update.windows_handoff_support import _HeldLock, _creation_time
 from tests.scripts.desktop_update.windows_marker_support import (
     CLI,
     MARKER,
     SCRIPT,
-    _creation_time,
     _dead_pid,
     _result,
     _run,

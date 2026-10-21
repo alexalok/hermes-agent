@@ -41,17 +41,6 @@ def sleeper():
     proc.wait()
 
 
-def _creation_time(pid: int) -> str:
-    # Limited query rights (what Python/Rust readers use): works for every process.
-    out = subprocess.run(
-        ['powershell', '-NoProfile', '-Command',
-         f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
-         "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()"],
-        capture_output=True, text=True, timeout=60, check=True,
-    ).stdout.strip()
-    return f'{int(out) / 1000:.3f}'
-
-
 def _dead_pid() -> int:
     proc = subprocess.Popen([sys.executable, '-c', 'pass'])
     proc.wait()

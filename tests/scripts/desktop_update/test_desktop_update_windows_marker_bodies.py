@@ -7,9 +7,9 @@ import time
 
 import pytest
 
+from tests.scripts.desktop_update.windows_handoff_support import _creation_time
 from tests.scripts.desktop_update.windows_marker_support import (
     MARKER,
-    _creation_time,
     _run,
     sleeper as sleeper,  # noqa: PLC0414 -- fixture self-alias avoids F811 for injected parameters
 )
