@@ -605,6 +605,34 @@ def test_slow_browse_reconcile_gives_up_inside_its_budget_and_boot_waits_it_out(
     assert "last_read_at" not in _session_columns(path)
 
 
+def test_browse_budget_expiring_during_begin_preserves_history_and_names_repair(tmp_path, monkeypatch):
+    """A transaction-start interruption must have the same retryable remedy as slow DDL."""
+    import hermes_state_reconcile as reconcile
+
+    path = _pre_merge_store(_profile_home(tmp_path) / "state.db")
+    before = _file_state(path)
+    original_arm = reconcile._Budget.arm
+
+    def expire_at_begin(budget, conn):
+        def trace(statement):
+            if statement == "BEGIN IMMEDIATE":
+                budget.deadline = 0
+
+        conn.set_trace_callback(trace)
+        original_arm(budget, conn)
+
+    monkeypatch.setattr(reconcile, "_BUDGET_PROGRESS_OPS", 1)
+    monkeypatch.setattr(reconcile._Budget, "arm", expire_at_begin)
+
+    with pytest.raises(HTTPException) as caught:
+        _open_session_db_at_path(path, read_only=True)
+
+    assert caught.value.status_code == 503
+    assert "nothing was changed" in caught.value.detail
+    assert "`hermes -p scribe sessions repair`" in caught.value.detail
+    assert _file_state(path) == before
+
+
 def test_equal_cardinality_corrupt_index_plus_drift_is_not_written(tmp_path):
     """R2-3: quick_check does not compare index keys with the table, so two equal-size indexes
     with swapped root pages pass it. Browse must still refuse as corrupt and write nothing."""
