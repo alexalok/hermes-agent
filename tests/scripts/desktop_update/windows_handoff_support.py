@@ -36,15 +36,31 @@ if __name__ == '__main__':
 """
 
 
-def _ps(command: str, timeout: int = 60) -> str:
-    return subprocess.run([POWERSHELL, '-NoProfile', '-Command', command],
-                          capture_output=True, text=True, timeout=timeout, check=True).stdout.strip()
-
-
 def _creation_time(pid: int) -> str:
-    out = _ps(f"$c = (Get-CimInstance Win32_Process -Filter 'ProcessId={pid}').CreationDate; "
-              "[DateTimeOffset]::new($c.ToUniversalTime()).ToUnixTimeMilliseconds().ToString()")
-    return f'{int(out) / 1000:.3f}'
+    # Native limited-rights queries avoid a PowerShell/CIM process per fixture.
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        raise ctypes.WinError(ctypes.get_last_error())
+    creation, exited, system, user = (wintypes.FILETIME() for _ in range(4))
+    try:
+        if not kernel.GetProcessTimes(handle, ctypes.byref(creation), ctypes.byref(exited),
+                                      ctypes.byref(system), ctypes.byref(user)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    finally:
+        kernel.CloseHandle(handle)
+    ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+    # Preserve CIM's Unix-millisecond truncation, including the marker's three digits.
+    milliseconds = ticks // 10_000 - 11_644_473_600_000
+    return f'{milliseconds // 1000}.{milliseconds % 1000:03d}'
 
 
 class _ProcessWatch:

@@ -25,11 +25,13 @@ jobs:
     name: Cold Windows SDK (${{ matrix.runner }})
     runs-on: ${{ matrix.runner }}
     # Cold ARM64 npm extraction alone can exceed 15 minutes on the hosted runner.
-    timeout-minutes: 45
+    timeout-minutes: ${{ github.repository == 'NousResearch/hermes-agent' && 45 || 120 }}
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest-32-arm-core, windows-latest-32-arm-core]
+        runner:
+          - ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-arm-core' || 'windows-11-arm' }}
+          - ${{ github.repository == 'NousResearch/hermes-agent' && 'windows-latest-32-arm-core' || 'windows-11-arm' }}
     steps:
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
