@@ -11,7 +11,7 @@ name: OS-specific tests
 # reproducing any of the OS behaviour that branch exists for. This workflow
 # is where those markers actually execute:
 #
-#   macos    → ``-m platforms``    on macOS arm64
+#   macos    → ``-m platforms``    on macOS arm64 (upstream only)
 #   windows  → ``-m platforms``    on Windows x64 and arm64
 #
 # (tests/conftest.py's ``pytest_collection_modifyitems`` hook skips
@@ -82,16 +82,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Two slices: on the old free standard runner (3 cores, 3 workers) one lane ran
-          # ~7.5 min and became the slowest required job once the Linux suite split.
-          - name: macOS-only tests (1/2)
-            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'blacksmith-12vcpu-macos-latest' || 'macos-latest' }}
-            marker: macos
-            slice: 1/2
-          - name: macOS-only tests (2/2)
-            runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'blacksmith-12vcpu-macos-latest' || 'macos-latest' }}
-            marker: macos
-            slice: 2/2
           - name: Windows-only tests
             runner: ${{ github.repository == 'NousResearch/hermes-agent' && 'blacksmith-32vcpu-windows-2025' || 'windows-2025' }}
             marker: windows
@@ -105,7 +95,7 @@ jobs:
             marker: windows
             timeout: 60
             slice: 2/2
-    steps:
+    steps: &os-test-steps
       - name: Checkout code
         uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a  # v1
         with:
@@ -214,6 +204,25 @@ jobs:
         # every earlier step passed: a step that failed midway can leave its own temp files
         # (a half-extracted download, a worktree its later cleanup never removed).
         uses: ./.github/actions/check-clean-worktree
+
+  macos-tests:
+    # Forks omit this suite because hosted macOS ARM capacity is unreliable.
+    # Keep upstream's two slices so macOS does not become the slowest lane.
+    if: github.repository == 'NousResearch/hermes-agent'
+    name: ${{ matrix.name }}
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS-only tests (1/2)
+            marker: macos
+            slice: 1/2
+          - name: macOS-only tests (2/2)
+            marker: macos
+            slice: 2/2
+    steps: *os-test-steps
 
   install-update-e2e:
     # The real scripts/install.ps1 -> `hermes update` HEAD -> NEXT journey on a real Windows

@@ -11,7 +11,7 @@ runner pool or adding credentials:
 | Platform | Fork runner |
 | --- | --- |
 | Linux x64 | `ubuntu-24.04` |
-| macOS arm64 | `macos-latest` |
+| macOS unit tests | Disabled on forks; both upstream slices remain |
 | Native payload macOS | `macos-15`, `macos-15-intel` (existing standard runners) |
 | Windows x64 | `windows-2025` |
 | Windows arm64 | `windows-11-arm` |
@@ -21,7 +21,11 @@ A fork-authored PR tested in the upstream repository therefore still uses
 upstream runners. The comparison uses the complete repository name, not the PR
 head owner or just the organization name.
 
-Forks keep every lane, matrix row, test selector, permission, and result gate.
+Forks omit the macOS-only unit test suite because standard macOS ARM runners
+have repeatedly failed to acquire capacity. Upstream keeps both macOS slices
+on Blacksmith; independent native payload builds still cover macOS on the
+existing standard runners. All other lanes, test selectors, permissions, and
+result gates remain enabled.
 Jobs normally hosted on larger runners get at least a 120-minute job budget on
 standard runners; existing longer budgets remain. Linux unit tests use the
 canonical runner's CPU-count default. Windows
@@ -46,7 +50,8 @@ Release-only and maintenance workflows retain their own infrastructure policy.
 `tests/ci/test_fork_runners.py` traverses that graph, discovers independent PR
 workflows, and evaluates runner and worker expressions for upstream and fork
 callers. It checks standard-runner
-availability, OS/architecture parity, and worker load per CPU. Existing routing and
+availability, OS/architecture parity for enabled lanes, worker load per CPU, and
+upstream-only macOS unit-test selection. Existing routing and
 required-result tests cover lane selection and failure propagation.
 
 References: [GitHub runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners),

@@ -1,4 +1,4 @@
-"""Fork CI must schedule every native lane without upstream runner access.
+"""Fork CI must schedule its enabled native lanes without upstream runner access.
 
 Replay runner and worker expressions throughout the actual reusable-workflow
 graph. A fork PR running in upstream still uses upstream's runner allocation:
@@ -36,7 +36,7 @@ _MANAGED = {
 _UPSTREAM_RUNNERS = {**_HOSTED, **_MANAGED}
 
 
-def _native_jobs():
+def _native_jobs(repository="contributor/hermes-agent"):
     pending, seen = ["ci.yaml"], set()
     yaml = YAML(typ="safe")
     while pending:
@@ -50,6 +50,10 @@ def _native_jobs():
             if called:
                 assert called.startswith("./.github/workflows/"), called
                 pending.append(called.rsplit("/", 1)[-1])
+                continue
+            condition = job.get("if")
+            assert gha.condition(condition, _context(_UPSTREAM, {})), f"{filename}/{name}: unmodelled gate {condition!r}"
+            if not gha.condition(condition, _context(repository, {})):
                 continue
             # Only the OS include matrix affects runner selection. Shard/slice
             # matrices vary the test selection, not the host allocation.
@@ -100,7 +104,10 @@ def _context(repository, row):
                 "label": {"name": "run-e2e"},
             },
         },
-        "inputs": {"release": False, "release-phase": ""},
+        "inputs": {
+            "release": False, "release-phase": "", "event_name": "pull_request",
+            "python": True, "e2e": True, "e2e_upgrade": True, "scan": True, "deps": True,
+        },
         "needs": {
             "mode": {"result": "success", "outputs": {"phase": "standalone", "release": "false"}},
             "detect": {"result": "success", "outputs": {"nix": "true", "build": "true"}},
@@ -111,8 +118,8 @@ def _context(repository, row):
 
 
 @pytest.mark.parametrize("repository", ["alexalok/hermes-agent", "contributor/hermes-agent", "NousResearch/other"])
-def test_fork_ci_schedules_every_platform_without_managed_runners(repository):
-    jobs = list(_native_jobs())
+def test_fork_ci_schedules_enabled_platforms_without_managed_runners(repository):
+    jobs = list(_native_jobs(repository))
     assert jobs
     for label, job, row in jobs:
         hosted = gha.render(job["runs-on"], _context(repository, row))
@@ -120,6 +127,24 @@ def test_fork_ci_schedules_every_platform_without_managed_runners(repository):
         assert hosted in _HOSTED, f"{label}: fork requires unavailable runner {hosted!r}"
         assert managed in _UPSTREAM_RUNNERS, f"{label}: unknown upstream runner {managed!r}"
         assert _HOSTED[hosted][:2] == _UPSTREAM_RUNNERS[managed][:2], f"{label}: fork changed OS/architecture"
+
+
+@pytest.mark.parametrize("repository", [_UPSTREAM, "contributor/hermes-agent"])
+def test_macos_tests_only_run_upstream_and_windows_selection_is_preserved(repository):
+    def selections(repo, marker):
+        return {(row["name"], row.get("slice")) for label, _, row in _native_jobs(repo)
+                if label.startswith("tests-os.yml/") and row.get("marker") == marker}
+
+    assert selections(repository, "windows") == selections(_UPSTREAM, "windows")
+    assert selections(repository, "windows")
+    if repository == _UPSTREAM:
+        assert {part for _, part in selections(repository, "macos")} == {"1/2", "2/2"}
+        for label, job, row in _native_jobs(repository):
+            if label.startswith("tests-os.yml/") and row.get("marker") == "macos":
+                runner = gha.render(job["runs-on"], _context(repository, row))
+                assert _UPSTREAM_RUNNERS[runner][0] == "macOS"
+    else:
+        assert not selections(repository, "macos")
 
 
 def test_fork_workers_do_not_increase_load_per_cpu():
