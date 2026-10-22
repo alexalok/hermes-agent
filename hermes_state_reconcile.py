@@ -251,7 +251,8 @@ def _apply_additive_schema(path: Path, budget: _Budget | None = None) -> None:
         except BaseException as exc:
             with contextlib.suppress(sqlite3.Error):
                 conn.execute('ROLLBACK')
-            if budget.expired and isinstance(exc, sqlite3.OperationalError):
+            # SQLite's busy handler waits without invoking the progress callback.
+            if isinstance(exc, sqlite3.OperationalError) and (budget.expired or budget.remaining() <= 0):
                 raise BrowseBudgetExceeded('browse schema catch-up exceeded its time budget') from exc
             raise
 
@@ -281,6 +282,8 @@ def _integrity_problem(path: Path, budget: _Budget):
             budget.arm(conn)
             rows = conn.execute('PRAGMA integrity_check(3)').fetchall()
     except sqlite3.DatabaseError as exc:
+        # Only scan work can be cached as too slow for these bytes. A lock wait
+        # must remain retryable after its holder leaves, even if the file is unchanged.
         if budget.expired:
             raise BrowseBudgetExceeded('integrity check exceeded the browse time budget') from exc
         from hermes_state_errors import is_malformed_db_error
